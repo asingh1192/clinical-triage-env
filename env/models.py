@@ -86,7 +86,7 @@ class TriageReward(BaseModel):
     """Structured reward signal."""
 
     score: float = Field(
-        ..., ge=0.0, le=1.0, description="Composite reward clipped to [0, 1]"
+        ..., ge=-1.0, le=1.0, description="Step reward, clipped to [-1, 1]"
     )
     breakdown: dict[str, float] = Field(
         default_factory=dict,

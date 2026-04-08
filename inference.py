@@ -38,7 +38,6 @@ from openai import OpenAI
 API_BASE_URL: str = os.environ.get("API_BASE_URL", "http://localhost:7860")
 MODEL_NAME: str = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
-OPENAI_API_BASE: str = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", HF_TOKEN or "dummy")
 
 ENV_TIMEOUT: int = 30  # seconds per HTTP request
@@ -82,9 +81,16 @@ def _http_get(path: str) -> dict:
     return {}
 
 
-def env_reset(seed: Optional[int] = None) -> dict:
-    payload = {} if seed is None else {"seed": seed}
-    return _http_post("/reset", payload)
+def env_reset(seed: Optional[int] = None, task: Optional[str] = None) -> dict:
+    url = "/reset"
+    params = []
+    if task:
+        params.append(f"task={task}")
+    if seed is not None:
+        params.append(f"seed={seed}")
+    if params:
+        url += "?" + "&".join(params)
+    return _http_post(url, {})
 
 
 def env_step(action_type: str, patient_id: str, value: Optional[str] = None) -> dict:
@@ -108,8 +114,8 @@ def get_llm_client() -> OpenAI:
     global _client
     if _client is None:
         _client = OpenAI(
-            api_key=OPENAI_API_KEY or "dummy",
-            base_url=OPENAI_API_BASE,
+            api_key=OPENAI_API_KEY or HF_TOKEN or "dummy",
+            base_url=API_BASE_URL,
         )
     return _client
 
@@ -301,22 +307,22 @@ def run_task2(seed: int = 42) -> float:
     print("TASK 2 — Medium: 5-Patient Queue Triage + Interventions")
     print("="*60)
 
-    from env.graders import build_task2_episode, grade_task2
+    from env.graders import grade_task2
     from env.models import PatientObservation
 
-    # Build episode locally for grading (deterministic)
-    try:
-        episode = build_task2_episode(seed=seed)
-        patients_data = episode["patients"]
-    except Exception as exc:
-        print(f"[ERROR] Could not build task2 episode: {exc}")
+    # Reset environment with live task
+    obs_dict = env_reset(seed=seed, task="task_2_medium")
+    if not obs_dict:
+        print("[ERROR] Could not reset environment for Task 2")
         return 0.0
 
     assigned_levels: list[int] = []
     agent_interventions: list[str | None] = []
+    patients_data = [] # Collect for local grader
 
-    for i, patient in enumerate(patients_data):
-        obs_dict = patient.model_dump()
+    for i in range(5):
+        patients_data.append(PatientObservation(**obs_dict))
+
         pid = obs_dict["patient_id"]
         print(f"  Patient {i+1}: {pid} | {obs_dict['chief_complaint'][:50]}")
 
@@ -338,10 +344,14 @@ def run_task2(seed: int = 42) -> float:
         assigned_levels.append(triage_level)
         agent_interventions.append(intervention)
 
-        # Execute in env (reset for each patient)
-        env_reset(seed=seed + i + 1)
+        # Execute in env
         env_step("assign_triage_level", pid, str(triage_level))
         env_step("order_intervention", pid, intervention)
+        
+        # Advance queue
+        result = env_step("set_disposition", pid, _rule_based_disposition(obs_dict))
+        if result and not result.get("done", True):
+            obs_dict = result.get("observation", {})
 
     score = grade_task2(
         patients_data,
@@ -361,14 +371,12 @@ def run_task3(seed: int = 42) -> float:
     print("TASK 3 — Hard: 8-Patient Full Workflow (≤20 steps)")
     print("="*60)
 
-    from env.graders import build_task3_episode, grade_task3
+    from env.graders import grade_task3
     from env.models import PatientObservation
 
-    try:
-        episode = build_task3_episode(seed=seed)
-        patients_data = episode["patients"]
-    except Exception as exc:
-        print(f"[ERROR] Could not build task3 episode: {exc}")
+    obs_dict = env_reset(seed=seed, task="task_3_hard")
+    if not obs_dict:
+        print("[ERROR] Could not reset environment for Task 3")
         return 0.0
 
     assigned_levels: list[int] = []
@@ -376,9 +384,11 @@ def run_task3(seed: int = 42) -> float:
     agent_interventions: list[list[str]] = []
     safety_violations: list[str] = []
     total_steps = 0
+    patients_data = []
 
-    for i, patient in enumerate(patients_data):
-        obs_dict = patient.model_dump()
+    for i in range(8):
+        patients_data.append(PatientObservation(**obs_dict))
+        
         pid = obs_dict["patient_id"]
         print(f"  Patient {i+1}: {pid} | {obs_dict['chief_complaint'][:50]}")
 
@@ -409,7 +419,6 @@ def run_task3(seed: int = 42) -> float:
         print(f"    → ESI {triage_level} | {interventions} | {disposition}")
 
         # Execute in env
-        env_reset(seed=seed + i + 100)
         env_step("assign_triage_level", pid, str(triage_level))
         total_steps += 2
 
@@ -419,8 +428,11 @@ def run_task3(seed: int = 42) -> float:
             info = (result or {}).get("info", {})
             safety_violations.extend(info.get("safety_violations", []))
 
-        env_step("set_disposition", pid, disposition)
+        result = env_step("set_disposition", pid, disposition)
         total_steps += 1
+        
+        if result and not result.get("done", True):
+             obs_dict = result.get("observation", {})
 
         assigned_levels.append(triage_level)
         assigned_dispositions.append(disposition)
@@ -450,7 +462,6 @@ def main() -> None:
     print("============================================================")
     print(f"API Base URL : {API_BASE_URL}")
     print(f"Model        : {MODEL_NAME}")
-    print(f"OpenAI Base  : {OPENAI_API_BASE}")
 
     # Verify server is reachable
     health = _http_get("/health")

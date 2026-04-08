@@ -130,7 +130,7 @@ action_space:
 # ── Reward structure ──────────────────────────────────────────────────────
 reward:
   type: dense
-  range: [0.0, 1.0]
+  range: [-1.0, 1.0]
   components:
     correct_triage_level:         +0.30
     evidence_based_intervention:  +0.20

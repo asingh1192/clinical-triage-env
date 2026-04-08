@@ -53,10 +53,11 @@ class ClinicalTriageEnv:
         self._ordered_interventions: list[str] = []
         self._episode_rewards: list[float] = []
         self._safety_violations: list[str] = []
+        self._patient_queue: list[PatientObservation] = []
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def reset(self, seed: Optional[int] = None) -> PatientObservation:
+    def reset(self, seed: Optional[int] = None, task: Optional[str] = None) -> PatientObservation:
         """Start a new episode with a fresh patient."""
         if seed is not None:
             self._seed = seed
@@ -72,18 +73,31 @@ class ClinicalTriageEnv:
         self._ordered_interventions = []
         self._episode_rewards = []
         self._safety_violations = []
+        self._patient_queue = []
 
-        # Pick difficulty randomly based on seed for variety
-        import random
-        rng = random.Random(seed if seed is not None else self._seed)
-        difficulty = rng.choice(["easy", "medium", "hard"])
-
-        if difficulty == "easy":
-            self._current_patient = self._generator.generate_easy()
-        elif difficulty == "medium":
-            self._current_patient = self._generator.generate_medium()
+        if task == "task_1_easy":
+            from .graders import build_task1_episode
+            self._current_patient = build_task1_episode(self._seed)["patient"]
+        elif task == "task_2_medium":
+            from .graders import build_task2_episode
+            self._patient_queue = build_task2_episode(self._seed)["patients"]
+            self._current_patient = self._patient_queue.pop(0)
+        elif task == "task_3_hard":
+            from .graders import build_task3_episode
+            self._patient_queue = build_task3_episode(self._seed)["patients"]
+            self._current_patient = self._patient_queue.pop(0)
         else:
-            self._current_patient = self._generator.generate_hard()
+            # Pick difficulty randomly based on seed for variety
+            import random
+            rng = random.Random(seed if seed is not None else self._seed)
+            difficulty = rng.choice(["easy", "medium", "hard"])
+    
+            if difficulty == "easy":
+                self._current_patient = self._generator.generate_easy()
+            elif difficulty == "medium":
+                self._current_patient = self._generator.generate_medium()
+            else:
+                self._current_patient = self._generator.generate_hard()
 
         return self._current_patient
 
@@ -107,13 +121,29 @@ class ClinicalTriageEnv:
 
         # Episode ends on: disposition set, max steps exceeded, or discharge
         done = self._check_done(action)
+        
+        patient_advanced = False
+        if not done and (action.action_type in ("set_disposition", "discharge") or self._assigned_disposition is not None):
+            if getattr(self, "_patient_queue", []):
+                self._current_patient = self._patient_queue.pop(0)
+                self._assigned_triage_level = None
+                self._assigned_disposition = None
+                self._ordered_interventions = []
+                patient_advanced = True
+
         self._done = done
 
         # Observation after action (same patient, updated triage level)
-        obs = PatientObservation(
-            **self._current_patient.model_dump()
-            | {"current_triage_level": self._assigned_triage_level}
-        )
+        if patient_advanced and self._current_patient:
+            obs = PatientObservation(
+                **self._current_patient.model_dump()
+                | {"current_triage_level": None}
+            )
+        else:
+            obs = PatientObservation(
+                **self._current_patient.model_dump()
+                | {"current_triage_level": self._assigned_triage_level}
+            )
 
         info = {
             "episode_id": self._episode_id,
@@ -258,7 +288,9 @@ class ClinicalTriageEnv:
         if self._step_count >= self.MAX_STEPS:
             return True
         if action.action_type in ("set_disposition", "discharge"):
-            return True
+            if not getattr(self, "_patient_queue", []):
+                return True
         if self._assigned_disposition is not None:
-            return True
+            if not getattr(self, "_patient_queue", []):
+                return True
         return False

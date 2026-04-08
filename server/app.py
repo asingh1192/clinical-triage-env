@@ -45,6 +45,7 @@ _env = ClinicalTriageEnv(seed=42)
 
 class ResetRequest(BaseModel):
     seed: Optional[int] = Field(default=None, description="Optional seed for reproducibility")
+    task: Optional[str] = Field(default=None, description="Optional task ID")
 
 
 class StepResponse(BaseModel):
@@ -65,13 +66,21 @@ async def health():
 
 
 @app.post("/reset", tags=["env"])
-async def reset(request: ResetRequest = ResetRequest()):
+async def reset(task: Optional[str] = None, seed: Optional[int] = None, request: Optional[ResetRequest] = None):
     """
     Start a new episode.
     Returns initial PatientObservation JSON.
     """
+    final_seed = seed
+    final_task = task
+    if request:
+        if getattr(request, "seed", None) is not None:
+            final_seed = request.seed
+        if getattr(request, "task", None) is not None:
+            final_task = request.task
+
     try:
-        obs = _env.reset(seed=request.seed)
+        obs = _env.reset(seed=final_seed, task=final_task)
         return JSONResponse(content=obs.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
