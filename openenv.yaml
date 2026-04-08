@@ -1,0 +1,158 @@
+name: ClinicalTriageEnv
+description: >
+  A hospital emergency department triage and discharge planning environment
+  for reinforcement learning research. Agents must assess synthetic patients,
+  assign ESI triage levels (1-5), order evidence-based interventions, and
+  determine correct dispositions (discharge / admit_ward / escalate_icu).
+  All patient data is SYNTHETIC — no real PHI.
+version: "1.0.0"
+author: ClinicalTriageEnv Contributors
+license: MIT
+
+# ── Server ──────────────────────────────────────────────────────────────────
+server:
+  port: 7860
+  endpoints:
+    reset: POST /reset
+    step:  POST /step
+    state: GET  /state
+    health: GET /health
+
+# ── Tasks ───────────────────────────────────────────────────────────────────
+tasks:
+  - id: task_1_easy
+    name: "Single Patient Triage"
+    difficulty: easy
+    description: >
+      Assess a single patient with a textbook presentation (one abnormal vital).
+      Assign the correct ESI triage level (1-5).
+    grader: env.graders.grade_task1
+    seed: 42
+    max_steps: 5
+    baseline_score: 0.5
+    target_score: 1.0
+    scoring:
+      exact_match: 1.0
+      off_by_one: 0.5
+      else: 0.0
+
+  - id: task_2_medium
+    name: "5-Patient Queue Triage + Interventions"
+    difficulty: medium
+    description: >
+      Triage a queue of 5 patients with 2-3 interacting conditions each.
+      Rank by urgency and prescribe one evidence-based intervention per patient.
+    grader: env.graders.grade_task2
+    seed: 42
+    max_steps: 20
+    baseline_score: 0.3
+    target_score: 0.8
+    scoring:
+      rank_correlation: "Kendall-tau [0,1]"
+      intervention_accuracy: "evidence-based match rate"
+      final: "rank_correlation × intervention_accuracy"
+
+  - id: task_3_hard
+    name: "8-Patient Full Workflow (≤20 steps)"
+    difficulty: hard
+    description: >
+      Manage a mixed 8-patient queue (easy/medium/hard presentations).
+      Complete full workflow — triage level, intervention, disposition — in
+      at most 20 steps. Safety violations are penalised.
+    grader: env.graders.grade_task3
+    seed: 42
+    max_steps: 20
+    baseline_score: 0.2
+    target_score: 0.7
+    scoring:
+      triage_accuracy: "40% (ESI level match rate)"
+      disposition_correctness: "40% (discharge/admit_ward/escalate_icu)"
+      efficiency_bonus: "20% (step budget ≤ 20)"
+      safety_penalty: "-0.15 per contraindicated action"
+
+# ── Observation space ─────────────────────────────────────────────────────
+observation_space:
+  type: dict
+  fields:
+    patient_id:
+      type: string
+      description: "Unique synthetic patient identifier (e.g. PT-0001)"
+    chief_complaint:
+      type: string
+      description: "Primary reason for ED visit"
+    vitals:
+      type: dict
+      keys:
+        hr:      { type: float, unit: bpm,          range: [20, 200] }
+        sbp:     { type: float, unit: mmHg,         range: [50, 250] }
+        dbp:     { type: float, unit: mmHg,         range: [30, 150] }
+        spo2:    { type: float, unit: "%",           range: [70, 100] }
+        rr:      { type: float, unit: breaths/min,  range: [4, 50]   }
+        temp_c:  { type: float, unit: "°C",         range: [32, 42]  }
+        gcs:     { type: float, unit: points,       range: [3, 15]   }
+    symptoms:
+      type: list[string]
+      description: "Active symptom list"
+    history:
+      type: list[string]
+      description: "Past medical and surgical history"
+    labs:
+      type: dict | null
+      description: "Optional labs: troponin, lactate, creatinine, glucose, inr, potassium, hemoglobin"
+    time_in_queue:
+      type: int
+      unit: minutes
+    current_triage_level:
+      type: int | null
+      range: [1, 5]
+      description: "ESI level if already assigned, else null"
+
+# ── Action space ──────────────────────────────────────────────────────────
+action_space:
+  type: dict
+  fields:
+    action_type:
+      type: enum
+      values:
+        - assign_triage_level   # value: "1"-"5"
+        - order_intervention    # value: intervention name string
+        - set_disposition       # value: "discharge"|"admit_ward"|"escalate_icu"
+        - request_labs          # value: lab panel name
+        - reassess              # value: optional note
+        - discharge             # value: optional note
+    patient_id:
+      type: string
+      description: "Target patient_id from observation"
+    value:
+      type: string | null
+      description: "Action payload (see action_type values above)"
+
+# ── Reward structure ──────────────────────────────────────────────────────
+reward:
+  type: dense
+  range: [0.0, 1.0]
+  components:
+    correct_triage_level:         +0.30
+    evidence_based_intervention:  +0.20
+    correct_disposition:          +0.30
+    time_efficiency_bonus:        +0.10
+    contraindicated_intervention: -0.20
+    critical_discharge_penalty:   -0.30
+    wasted_step:                  -0.10
+
+# ── Tags ─────────────────────────────────────────────────────────────────
+tags:
+  - medical
+  - triage
+  - clinical-decision-support
+  - openenv
+  - emergency-medicine
+  - dense-rewards
+  - deterministic
+
+# ── Runtime constraints ───────────────────────────────────────────────────
+runtime:
+  python: ">=3.11"
+  vcpu: 2
+  memory_gb: 8
+  phi: false   # No real patient data — all synthetic

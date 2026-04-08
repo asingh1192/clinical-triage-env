@@ -1,0 +1,26 @@
+[project]
+name = "clinical-triage-env"
+version = "1.0.0"
+description = "Clinical Triage OpenEnv Environment"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "ClinicalTriageEnv Contributors"}
+]
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
+    "openai>=1.0.0",
+    "requests>=2.25.0",
+    "httpx>=0.24.0",
+    "scipy>=1.11.0",
+    "openenv-core>=0.2.3"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+server = "server.app:main"
