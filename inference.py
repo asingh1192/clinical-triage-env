@@ -38,7 +38,8 @@ def log_step(step: int, reward: float):
     print(f"[STEP] step={step} reward={reward:.4f}", flush=True)
 
 def log_end(task, score, steps):
-    print(f"[END] task={task} score={score} steps={steps}", flush=True)
+    safe_score = max(0.001, min(0.999, float(score)))
+    print(f"[END] task={task} score={safe_score:.4f} steps={steps}", flush=True)
 
 
 # ---------------------------------------------------------------------------

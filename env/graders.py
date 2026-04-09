@@ -16,6 +16,12 @@ from .evidence_base import (
 from .models import PatientObservation
 from .patient_generator import PatientGenerator
 
+_SCORE_MIN = 0.001
+_SCORE_MAX = 0.999
+
+def _clamp(score: float) -> float:
+    return round(max(_SCORE_MIN, min(_SCORE_MAX, float(score))), 4)
+
 
 # ---------------------------------------------------------------------------
 # Task 1 — Easy: Single patient, textbook ESI level matching
@@ -38,11 +44,11 @@ def grade_task1(
     )
     diff = abs(assigned_triage_level - expected)
     if diff == 0:
-        return 1.0
+        return _clamp(0.95)
     elif diff == 1:
-        return 0.5
+        return _clamp(0.5)
     else:
-        return 0.0
+        return _clamp(0.001)
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +59,7 @@ def _kendall_tau(rank_a: list[int], rank_b: list[int]) -> float:
     """Compute Kendall-tau correlation in [0, 1] (normalized from [-1, 1])."""
     n = len(rank_a)
     if n < 2:
-        return 1.0
+        return 0.95
     concordant = discordant = 0
     for i in range(n):
         for j in range(i + 1, n):
@@ -66,9 +72,14 @@ def _kendall_tau(rank_a: list[int], rank_b: list[int]) -> float:
                 discordant += 1
     total = concordant + discordant
     if total == 0:
-        return 1.0
+        return 0.95
     tau = (concordant - discordant) / (n * (n - 1) / 2)
-    return (tau + 1) / 2  # map [-1, 1] → [0, 1]
+    score = (tau + 1) / 2  # map [-1, 1] → [0, 1]
+    if score == 1.0:
+        return 0.95
+    if score == 0.0:
+        return 0.001
+    return score
 
 
 # ---------------------------------------------------------------------------
@@ -115,18 +126,18 @@ def grade_task2(
     iv_scores = []
     for p, iv in zip(patients, agent_interventions):
         if iv is None or iv.strip() == "":
-            iv_scores.append(0.0)
+            iv_scores.append(0.001)
         elif is_contraindicated(iv, p.vitals, p.labs, p.history, p.symptoms):
-            iv_scores.append(0.0)
+            iv_scores.append(0.05)
         elif is_safe_intervention(iv, p.vitals, p.labs, p.history, p.symptoms):
-            iv_scores.append(1.0)
+            iv_scores.append(0.95)
         else:
             iv_scores.append(0.3)  # neutral intervention
 
     intervention_score = sum(iv_scores) / len(iv_scores)
 
     final = tau_score * intervention_score
-    return round(max(0.0, min(1.0, final)), 4)
+    return _clamp(final)
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +196,9 @@ def grade_task3(
 
     # ── Safety penalties ─────────────────────────────────────────────────
     penalty = len(safety_violations) * 0.15
-    composite = max(0.0, composite - penalty)
+    composite = max(0.001, composite - penalty)
 
-    return round(min(1.0, composite), 4)
+    return _clamp(composite)
 
 
 # ---------------------------------------------------------------------------
