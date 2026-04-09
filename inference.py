@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 import requests
 
-# Fix Windows console encoding so print() works with any charset
+# Fix Windows console encoding so print(flush=True) works with any charset
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -31,11 +31,22 @@ if hasattr(sys.stdout, 'reconfigure'):
         pass
 from openai import OpenAI
 
+def log_start(task: str):
+    print(f"[START] task={task}", flush=True)
+
+def log_step(step: int, reward: float):
+    print(f"[STEP] step={step} reward={reward:.4f}", flush=True)
+
+def log_end(task, score, steps):
+    print(f"[END] task={task} score={score} steps={steps}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Config from environment variables
 # ---------------------------------------------------------------------------
 
-API_BASE_URL: str = os.environ.get("API_BASE_URL", "http://localhost:7860")
+LLM_BASE_URL: str = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+ENV_BASE_URL: str = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
 MODEL_NAME: str = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", HF_TOKEN or "dummy")
@@ -52,7 +63,7 @@ _session.headers.update({"Content-Type": "application/json"})
 
 
 def _http_post(path: str, payload: dict) -> dict:
-    url = f"{API_BASE_URL}{path}"
+    url = f"{ENV_BASE_URL}{path}"
     for attempt in range(MAX_RETRY):
         try:
             r = _session.post(url, json=payload, timeout=ENV_TIMEOUT)
@@ -60,14 +71,14 @@ def _http_post(path: str, payload: dict) -> dict:
             return r.json()
         except Exception as exc:
             if attempt == MAX_RETRY - 1:
-                print(f"[WARN] POST {path} failed after {MAX_RETRY} attempts: {exc}")
+                print(f"[WARN] POST {path} failed after {MAX_RETRY} attempts: {exc}", flush=True)
                 return {}
             time.sleep(1)
     return {}
 
 
 def _http_get(path: str) -> dict:
-    url = f"{API_BASE_URL}{path}"
+    url = f"{ENV_BASE_URL}{path}"
     for attempt in range(MAX_RETRY):
         try:
             r = _session.get(url, timeout=ENV_TIMEOUT)
@@ -75,7 +86,7 @@ def _http_get(path: str) -> dict:
             return r.json()
         except Exception as exc:
             if attempt == MAX_RETRY - 1:
-                print(f"[WARN] GET {path} failed after {MAX_RETRY} attempts: {exc}")
+                print(f"[WARN] GET {path} failed after {MAX_RETRY} attempts: {exc}", flush=True)
                 return {}
             time.sleep(1)
     return {}
@@ -115,7 +126,7 @@ def get_llm_client() -> OpenAI:
     if _client is None:
         _client = OpenAI(
             api_key=OPENAI_API_KEY or HF_TOKEN or "dummy",
-            base_url=API_BASE_URL,
+            base_url=LLM_BASE_URL,
         )
     return _client
 
@@ -135,7 +146,7 @@ def llm_call(system_prompt: str, user_prompt: str, max_tokens: int = 512) -> str
         )
         return response.choices[0].message.content or ""
     except Exception as exc:
-        print(f"[WARN] LLM call failed: {exc}. Using rule-based fallback.")
+        print(f"[WARN] LLM call failed: {exc}. Using rule-based fallback.", flush=True)
         return ""
 
 # ---------------------------------------------------------------------------
@@ -246,18 +257,19 @@ def _parse_llm_json(text: str, fallback: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def run_task1(seed: int = 42) -> float:
-    print("\n" + "="*60)
-    print("TASK 1 — Easy: Single Patient Triage")
-    print("="*60)
+    log_start("task_1_easy")
+    print("\n" + "="*60, flush=True)
+    print("TASK 1 — Easy: Single Patient Triage", flush=True)
+    print("="*60, flush=True)
 
     obs = env_reset(seed=seed)
     if not obs:
-        print("[ERROR] Could not reset environment for Task 1")
+        print("[ERROR] Could not reset environment for Task 1", flush=True)
         return 0.0
 
     pid = obs.get("patient_id", "PT-0001")
-    print(f"Patient: {pid} | Complaint: {obs.get('chief_complaint','N/A')}")
-    print(f"Vitals: {obs.get('vitals', {})}")
+    print(f"Patient: {pid} | Complaint: {obs.get('chief_complaint','N/A', flush=True)}")
+    print(f"Vitals: {obs.get('vitals', {}, flush=True)}")
 
     # Ask LLM
     user_msg = (
@@ -271,19 +283,22 @@ def run_task1(seed: int = 42) -> float:
     triage_level = decision.get("triage_level")
     if not isinstance(triage_level, int) or not (1 <= triage_level <= 5):
         triage_level = _rule_based_triage_level(obs)
-        print(f"[fallback] LLM gave invalid triage_level → using rule-based: {triage_level}")
+        print(f"[fallback] LLM gave invalid triage_level → using rule-based: {triage_level}", flush=True)
 
     intervention = decision.get("intervention") or _rule_based_intervention(obs)
     disposition  = decision.get("disposition")  or _rule_based_disposition(obs)
 
-    print(f"LLM Decision → ESI: {triage_level}, Intervention: {intervention}, Disposition: {disposition}")
+    print(f"LLM Decision → ESI: {triage_level}, Intervention: {intervention}, Disposition: {disposition}", flush=True)
 
     # Execute actions against the env
     env_step("assign_triage_level", pid, str(triage_level))
+    log_step(1, 0.0)
     env_step("order_intervention", pid, intervention)
+    log_step(2, 0.0)
     result = env_step("set_disposition", pid, disposition)
 
     reward = result.get("reward", 0.0) if result else 0.0
+    log_step(3, reward)
 
     # Also compute grader score
     from env.graders import grade_task1
@@ -292,10 +307,11 @@ def run_task1(seed: int = 42) -> float:
         patient_obj = PatientObservation(**obs)
         score = grade_task1(patient_obj, triage_level, seed=seed)
     except Exception as exc:
-        print(f"[WARN] Grader failed: {exc}, using env reward")
+        print(f"[WARN] Grader failed: {exc}, using env reward", flush=True)
         score = reward
 
-    print(f"Task 1 Score: {score:.4f}")
+    print(f"Task 1 Score: {score:.4f}", flush=True)
+    log_end("task_1_easy", score, 3)
     return score
 
 # ---------------------------------------------------------------------------
@@ -303,9 +319,11 @@ def run_task1(seed: int = 42) -> float:
 # ---------------------------------------------------------------------------
 
 def run_task2(seed: int = 42) -> float:
-    print("\n" + "="*60)
-    print("TASK 2 — Medium: 5-Patient Queue Triage + Interventions")
-    print("="*60)
+    log_start("task_2_medium")
+    step_counter = 0
+    print("\n" + "="*60, flush=True)
+    print("TASK 2 — Medium: 5-Patient Queue Triage + Interventions", flush=True)
+    print("="*60, flush=True)
 
     from env.graders import grade_task2
     from env.models import PatientObservation
@@ -313,7 +331,7 @@ def run_task2(seed: int = 42) -> float:
     # Reset environment with live task
     obs_dict = env_reset(seed=seed, task="task_2_medium")
     if not obs_dict:
-        print("[ERROR] Could not reset environment for Task 2")
+        print("[ERROR] Could not reset environment for Task 2", flush=True)
         return 0.0
 
     assigned_levels: list[int] = []
@@ -324,7 +342,7 @@ def run_task2(seed: int = 42) -> float:
         patients_data.append(PatientObservation(**obs_dict))
 
         pid = obs_dict["patient_id"]
-        print(f"  Patient {i+1}: {pid} | {obs_dict['chief_complaint'][:50]}")
+        print(f"  Patient {i+1}: {pid} | {obs_dict['chief_complaint'][:50]}", flush=True)
 
         user_msg = (
             f"Patient {i+1}/5:\n{json.dumps(obs_dict, indent=2)}\n\n"
@@ -340,16 +358,23 @@ def run_task2(seed: int = 42) -> float:
 
         intervention = decision.get("intervention") or _rule_based_intervention(obs_dict)
 
-        print(f"    → ESI {triage_level} | Intervention: {intervention}")
+        print(f"    → ESI {triage_level} | Intervention: {intervention}", flush=True)
         assigned_levels.append(triage_level)
         agent_interventions.append(intervention)
 
         # Execute in env
         env_step("assign_triage_level", pid, str(triage_level))
+        step_counter += 1
+        log_step(step_counter, 0.0)
         env_step("order_intervention", pid, intervention)
+        step_counter += 1
+        log_step(step_counter, 0.0)
         
         # Advance queue
         result = env_step("set_disposition", pid, _rule_based_disposition(obs_dict))
+        reward = result.get("reward", 0.0) if result else 0.0
+        step_counter += 1
+        log_step(step_counter, reward)
         if result and not result.get("done", True):
             obs_dict = result.get("observation", {})
 
@@ -359,7 +384,8 @@ def run_task2(seed: int = 42) -> float:
         agent_interventions,
         seed=seed,
     )
-    print(f"Task 2 Score: {score:.4f}")
+    print(f"Task 2 Score: {score:.4f}", flush=True)
+    log_end("task_2_medium", score, step_counter)
     return score
 
 # ---------------------------------------------------------------------------
@@ -367,16 +393,18 @@ def run_task2(seed: int = 42) -> float:
 # ---------------------------------------------------------------------------
 
 def run_task3(seed: int = 42) -> float:
-    print("\n" + "="*60)
-    print("TASK 3 — Hard: 8-Patient Full Workflow (≤20 steps)")
-    print("="*60)
+    log_start("task_3_hard")
+    step_counter = 0
+    print("\n" + "="*60, flush=True)
+    print("TASK 3 — Hard: 8-Patient Full Workflow (≤20 steps)", flush=True)
+    print("="*60, flush=True)
 
     from env.graders import grade_task3
     from env.models import PatientObservation
 
     obs_dict = env_reset(seed=seed, task="task_3_hard")
     if not obs_dict:
-        print("[ERROR] Could not reset environment for Task 3")
+        print("[ERROR] Could not reset environment for Task 3", flush=True)
         return 0.0
 
     assigned_levels: list[int] = []
@@ -390,7 +418,7 @@ def run_task3(seed: int = 42) -> float:
         patients_data.append(PatientObservation(**obs_dict))
         
         pid = obs_dict["patient_id"]
-        print(f"  Patient {i+1}: {pid} | {obs_dict['chief_complaint'][:50]}")
+        print(f"  Patient {i+1}: {pid} | {obs_dict['chief_complaint'][:50]}", flush=True)
 
         user_msg = (
             f"Patient {i+1}/8 (full workflow required):\n{json.dumps(obs_dict, indent=2)}\n\n"
@@ -416,20 +444,27 @@ def run_task3(seed: int = 42) -> float:
         if disposition not in ("discharge", "admit_ward", "escalate_icu"):
             disposition = _rule_based_disposition(obs_dict)
 
-        print(f"    → ESI {triage_level} | {interventions} | {disposition}")
+        print(f"    → ESI {triage_level} | {interventions} | {disposition}", flush=True)
 
         # Execute in env
         env_step("assign_triage_level", pid, str(triage_level))
+        step_counter += 1
+        log_step(step_counter, 0.0)
         total_steps += 2
 
         for iv in interventions:
             result = env_step("order_intervention", pid, iv)
             total_steps += 1
+            step_counter += 1
+            log_step(step_counter, 0.0)
             info = (result or {}).get("info", {})
             safety_violations.extend(info.get("safety_violations", []))
 
         result = env_step("set_disposition", pid, disposition)
         total_steps += 1
+        step_counter += 1
+        reward = result.get("reward", 0.0) if result else 0.0
+        log_step(step_counter, reward)
         
         if result and not result.get("done", True):
              obs_dict = result.get("observation", {})
@@ -438,7 +473,7 @@ def run_task3(seed: int = 42) -> float:
         assigned_dispositions.append(disposition)
         agent_interventions.append(interventions)
 
-    print(f"  Total steps used: {total_steps}/20")
+    print(f"  Total steps used: {total_steps}/20", flush=True)
 
     score = grade_task3(
         patients_data,
@@ -449,7 +484,8 @@ def run_task3(seed: int = 42) -> float:
         safety_violations,
         seed=seed,
     )
-    print(f"Task 3 Score: {score:.4f}")
+    print(f"Task 3 Score: {score:.4f}", flush=True)
+    log_end("task_3_hard", score, step_counter)
     return score
 
 # ---------------------------------------------------------------------------
@@ -457,17 +493,17 @@ def run_task3(seed: int = 42) -> float:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    print("============================================================")
-    print("         ClinicalTriageEnv -- LLM Agent Inference          ")
-    print("============================================================")
-    print(f"API Base URL : {API_BASE_URL}")
-    print(f"Model        : {MODEL_NAME}")
+    print("============================================================", flush=True)
+    print("         ClinicalTriageEnv -- LLM Agent Inference          ", flush=True)
+    print("============================================================", flush=True)
+    print(f"API Base URL : {ENV_BASE_URL}", flush=True)
+    print(f"Model        : {MODEL_NAME}", flush=True)
 
     # Verify server is reachable
     health = _http_get("/health")
     if health.get("status") != "ok":
-        print(f"[WARNING] Health check response: {health}")
-        print("Server may not be running. Attempting to continue with local graders.")
+        print(f"[WARNING] Health check response: {health}", flush=True)
+        print("Server may not be running. Attempting to continue with local graders.", flush=True)
 
     start_time = time.time()
 
@@ -477,39 +513,42 @@ def main() -> None:
     try:
         scores["task_1_easy"] = run_task1(seed=42)
     except Exception as exc:
-        print(f"[ERROR] Task 1 failed: {exc}")
+        print(f"[ERROR] Task 1 failed: {exc}", flush=True)
+        log_end("task_1_easy", 0.0, 0)
         scores["task_1_easy"] = 0.0
 
     try:
         scores["task_2_medium"] = run_task2(seed=42)
     except Exception as exc:
-        print(f"[ERROR] Task 2 failed: {exc}")
+        print(f"[ERROR] Task 2 failed: {exc}", flush=True)
+        log_end("task_2_medium", 0.0, 0)
         scores["task_2_medium"] = 0.0
 
     try:
         scores["task_3_hard"] = run_task3(seed=42)
     except Exception as exc:
-        print(f"[ERROR] Task 3 failed: {exc}")
+        print(f"[ERROR] Task 3 failed: {exc}", flush=True)
+        log_end("task_3_hard", 0.0, 0)
         scores["task_3_hard"] = 0.0
 
     elapsed = time.time() - start_time
 
-    print("\n" + "=" * 60)
-    print("FINAL SCORES")
-    print("=" * 60)
+    print("\n" + "=" * 60, flush=True)
+    print("FINAL SCORES", flush=True)
+    print("=" * 60, flush=True)
     for task, score in scores.items():
         bar = "#" * int(score * 20)
-        print(f"  {task:<20} {score:.4f}  |{bar:<20}|")
+        print(f"  {task:<20} {score:.4f}  |{bar:<20}|", flush=True)
     mean_score = sum(scores.values()) / len(scores)
-    print(f"  {'Mean':<20} {mean_score:.4f}")
-    print(f"\nTotal runtime: {elapsed:.1f}s")
+    print(f"  {'Mean':<20} {mean_score:.4f}", flush=True)
+    print(f"\nTotal runtime: {elapsed:.1f}s", flush=True)
 
     # Validate all scores are in [0.0, 1.0]
     all_valid = all(0.0 <= s <= 1.0 for s in scores.values())
     if all_valid:
-        print("\n[OK] All scores valid (0.0 - 1.0) - submission ready!")
+        print("\n[OK] All scores valid (0.0 - 1.0) - submission ready!", flush=True)
     else:
-        print("\n[FAIL] Some scores out of range - check graders!")
+        print("\n[FAIL] Some scores out of range - check graders!", flush=True)
         sys.exit(1)
 
 
